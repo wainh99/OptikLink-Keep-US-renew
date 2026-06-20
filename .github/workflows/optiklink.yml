@@ -30,8 +30,8 @@ jobs:
           SOCKS_LINK: ${{ secrets.SOCKS_LINK }}
         run: |
           if [ -z "$SOCKS_LINK" ]; then
-            echo "⚠️ 未配置 SOCKS_LINK，跳过代理启动，降级为直连"
-            exit 0
+            echo "❌ 未配置 SOCKS_LINK，保活必须使用代理，中断运行！"
+            exit 1
           fi
 
           echo "📥 下载 Xray 二进制文件..."
@@ -47,10 +47,8 @@ jobs:
           node -e "
           try {
             const rawLink = process.env.SOCKS_LINK;
-            // 解析 socks:// 链接
             const url = new URL(rawLink);
             
-            // 处理 Base64 加密的用户名密码 (YmI0MjQyNjA6MDY2YWIzNzhiNzdk -> bb424260:066ab378b77d)
             let username = url.username;
             let password = url.password;
             
@@ -81,7 +79,8 @@ jobs:
               }]
             };
             
-            require('fs').writeFileSync('./xray_bin/xray_config.json', JSON.stringify(config, null, 2));
+            // 直接写在根目录，避免切路径问题
+            require('fs').writeFileSync('xray_config.json', JSON.stringify(config, null, 2));
             console.log('✅ 配置文件生成成功');
           } catch (err) {
             console.error('❌ 解析 SOCKS 链接失败:', err.message);
@@ -89,14 +88,26 @@ jobs:
           }
           "
 
-          echo "🚀 在专属目录中启动 Xray 服务..."
-          cd xray_bin
-          nohup ./xray run -c xray_config.json > xray.log 2>&1 &
-          cd ..
+          echo "🚀 使用绝对路径后台启动 Xray..."
+          # 不再 cd，直接在根目录拉起进程，防止工作目录丢失导致崩溃
+          nohup ./xray_bin/xray run -c xray_config.json > xray.log 2>&1 &
+          
+          echo "⏳ 等待 5 秒完成握手..."
           sleep 5
 
-          echo "✅ Xray 已启动，测试代理连通性..."
-          curl -s -x http://127.0.0.1:8080 https://api.ipify.org || echo "❌ 代理测试未通，请检查节点可用性"
+          echo "🔍 检查 Xray 进程是否存在:"
+          ps aux | grep xray
+
+          echo "✅ 测试代理连通性..."
+          PROXY_IP=$(curl -s -x http://127.0.0.1:8080 --max-time 10 https://api.ipify.org)
+          if [ -z "$PROXY_IP" ]; then
+            echo "❌ 错误: 代理测试未通！可能是该 SOCKS5 节点在当前网络不可用或已失效。"
+            echo "📋 Xray 错误日志详情:"
+            cat xray.log
+            exit 1
+          else
+            echo "🎉 代理成功接入！当前出口 IP 变为: $(echo $PROXY_IP | sed 's/\([0-9]*\.[0-9]*\.[0-9]*\.\)[0-9]*/\1**/g')"
+          fi
 
       - name: 🚀 运行保活脚本
         env:
