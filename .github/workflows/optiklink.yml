@@ -1,8 +1,10 @@
 name: 🎮 OptikLink-Keep
+
 on:
   schedule:
     - cron: '0 1 */2 * *'
   workflow_dispatch:
+
 jobs:
   keepalive:
     name: 🔄 执行保活
@@ -23,38 +25,67 @@ jobs:
       - name: 🌐 安装 Playwright 浏览器
         run: npx playwright install chromium --with-deps
 
-      - name: 🛰️ 一键安装 Xray-Core
-        run: |
-          bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
-
-      # 存在VLESS节点则跳过外部GOST启动，由JS脚本内部管理xray+gost
-      - name: 🛡️ VLESS节点环境就绪提示
-        if: ${{ secrets.VLESS_WS_NODE != '' }}
-        run: echo "已配置VLESS-XHTTP节点，代理由脚本内部自动启动"
-
-      # 原有GOST代理逻辑，仅无VLESS时执行
-      - name: 🛡️ 启动外部GOST代理转发
-        if: ${{ secrets.VLESS_WS_NODE == '' && secrets.GOST_PROXY != '' }}
+      - name: 🛡️ 启动 Xray 代理转发 (VLESS)
         env:
-          GOST_PROXY: ${{ secrets.GOST_PROXY }}
+          VLESS_LINKS: ${{ secrets.VLESS_LINKS }}
         run: |
-          VERSION=$(curl -s https://api.github.com/repos/ginuerzh/gost/releases/latest | grep '"tag_name"' | cut -d'"' -f4 | tr -d 'v')
-          echo "📦 GOST 版本: $VERSION"
-          wget -q "https://github.com/ginuerzh/gost/releases/download/v${VERSION}/gost_${VERSION}_linux_amd64.tar.gz"
-          tar -xzf "gost_${VERSION}_linux_amd64.tar.gz"
-          chmod +x gost
-          nohup ./gost -L http://:8080 -F "$GOST_PROXY" > gost.log 2>&1 &
+          if [ -z "$VLESS_LINKS" ]; then
+            echo "⚠️ 未配置 VLESS_LINKS，跳过代理启动，降级为直连"
+            exit 0
+          fi
+
+          echo "📥 安装 Xray-core..."
+          bash <(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh) > /dev/null 2>&1
+          
+          echo "🛠️ 转换为本地 HTTP 代理配置..."
+          # 使用纯 100% 兼容的 Node.js 脚本解析你的 VLESS URL 属性
+          node -e "
+          const url = new URL(process.env.VLESS_LINKS);
+          const config = {
+            log: { logLevel: 'warning' },
+            inbounds: [{
+              port: 8080, listen: '127.0.0.1', protocol: 'http', settings: { auth: 'noauth', udp: true }
+            }],
+            outbounds: [{
+              protocol: 'vless',
+              settings: {
+                vnext: [{
+                  address: url.hostname,
+                  port: parseInt(url.port || '443'),
+                  users: [{ id: url.username, encryption: url.searchParams.get('encryption') || 'none' }]
+                }]
+              },
+              streamSettings: {
+                network: url.searchParams.get('type') || 'tcp',
+                security: url.searchParams.get('security') || 'none',
+                tlsSettings: {
+                  serverName: url.searchParams.get('sni') || url.hostname,
+                  allowInsecure: url.searchParams.get('allowInsecure') === '1' || url.searchParams.get('insecure') === '1'
+                },
+                xhttpSettings: {
+                  path: url.searchParams.get('path') || '/',
+                  host: url.searchParams.get('host') || url.hostname,
+                  mode: url.searchParams.get('mode') || 'packet-up'
+                }
+              }
+            }]
+          };
+          require('fs').writeFileSync('xray_config.json', JSON.stringify(config, null, 2));
+          "
+
+          echo "🚀 启动 Xray 服务..."
+          nohup xray run -c xray_config.json > xray.log 2>&1 &
           sleep 3
-          echo "✅ GOST 已启动，测试连通性..."
+
+          echo "✅ Xray 已启动，测试代理连通性..."
           curl -s -x http://127.0.0.1:8080 https://api.ipify.org | sed 's/\([0-9]*\.[0-9]*\.[0-9]*\.\)[0-9]*/\1**/g'
 
       - name: 🚀 运行保活脚本
         env:
           DISCORD_ACCOUNT: ${{ secrets.DISCORD_ACCOUNT }}
-          PANEL_ACCOUNT: ${{ secrets.PANEL_ACCOUNT }}
-          TG_BOT: ${{ secrets.TG_BOT }}
-          GOST_PROXY: http://127.0.0.1:8080
-          VLESS_WS_NODE: ${{ secrets.VLESS_WS_NODE }}
+          PANEL_ACCOUNT:   ${{ secrets.PANEL_ACCOUNT }}
+          TG_BOT:          ${{ secrets.TG_BOT }}
+          GOST_PROXY:      http://127.0.0.1:8080
         run: npx playwright test
 
       - name: 📸 上传失败截图
