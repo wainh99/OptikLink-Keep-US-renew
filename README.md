@@ -12,10 +12,21 @@
 
 | 🔑 Secret 名称 | 📝 格式 | ✅ 必填 |
 |---|---|---|
-| `DISCORD_ACCOUNT` | `email,password` | ✅ |
+| `DISCORD_ACCOUNT` | `Authorization值` | ✅ |
 | `PANEL_ACCOUNT` | `username,password` | ✅ |
 | `TG_BOT` | `chat_id,bot_token` | 可选 |
-| `GOST_PROXY` | `socks5://user:pass@host:port` | 可选 |
+| `GOST_PROXY` | `socks5://user:pass@host:port` | 改动过，要重新设置 |
+
+
+
+获取 Discord Token
+在浏览器中登录 Discord
+按 F12 打开开发者工具 → Network（网络）
+筛选 Fetch/XHR，刷新页面
+点击任意 discord.com/api 请求
+在 Headers（请求头）中找到 Authorization 并复制完整值
+填入对应 FREEZEHOST_DISCORD_TOKEN_*
+
 
 ### 3️⃣ 启用 Actions
 
