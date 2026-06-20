@@ -134,6 +134,9 @@ test('OptikLink 保活', async ({ }, testInfo) => {
         proxy: proxyConfig,
     });
     const page = await browser.newPage();
+    ignoreHTTPSErrors: true  // 强制忽略所有代理或证书无效错误
+    });
+    const page = await context.newPage();
     page.setDefaultTimeout(TIMEOUT);
     let activePage = page;
 
