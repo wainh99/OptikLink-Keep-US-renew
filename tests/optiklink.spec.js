@@ -62,20 +62,6 @@ function sendTG(result, serverName = 'OptikLink') {
     });
 }
 
-// 处理 Discord 登录页（填账密）
-async function handleDiscordLogin(page, email, password) {
-    await page.fill('input[name="email"]', email);
-    await page.fill('input[name="password"]', password);
-    await page.click('button[type="submit"]');
-    try {
-        await page.waitForURL(url => !url.toString().includes('discord.com/login'), { timeout: 15000 });
-    } catch {
-        let err = '账密错误或触发了 2FA / 验证码';
-        try { err = await page.locator('[class*="errorMessage"]').first().innerText(); } catch {}
-        throw new Error(`❌ Discord 登录失败: ${err}`);
-    }
-}
-
 // 处理 Discord OAuth 授权页
 async function handleOAuthPage(page) {
     await page.waitForTimeout(2000);
@@ -135,7 +121,7 @@ test('OptikLink 保活', async ({ }, testInfo) => {
                 req.end();
             });
             proxyConfig = { server: process.env.GOST_PROXY };
-            console.log('🛡️ 本地代理连通，使用 GOST 转发');
+            console.log('🛡️ 本地代理连通，使用 Xray 转发');
         } catch {
             console.log('⚠️ 本地代理不可达，降级为直连');
         }
@@ -153,8 +139,9 @@ test('OptikLink 保活', async ({ }, testInfo) => {
     page.setDefaultTimeout(TIMEOUT);
     let activePage = page;
 
+    // 广告屏蔽及强力防弹窗脚本
     await page.addInitScript(() => {
-        if (!location.hostname.includes('optiklink.net')) return;
+        if (!location.hostname.includes('optiklink')) return;
 
         const AD_DOMAINS = [
             'tzegilo.com', 'alwingulla.com', 'auqot.com', 'jmosl.com', '094kk.com',
@@ -179,69 +166,22 @@ test('OptikLink 保活', async ({ }, testInfo) => {
             return el;
         };
 
-        const _write = document.write.bind(document);
-        document.write = function (html) { if (!isAd(html)) return _write(html); };
-
-        const _appendChild = Element.prototype.appendChild;
-        Element.prototype.appendChild = function (node) {
-            if (node?.tagName === 'SCRIPT' && isAd(node.src)) return node;
-            return _appendChild.call(this, node);
-        };
-
-        const _insertBefore = Element.prototype.insertBefore;
-        Element.prototype.insertBefore = function (node, ref) {
-            if (node?.tagName === 'SCRIPT' && isAd(node.src)) return node;
-            return _insertBefore.call(this, node, ref);
-        };
-
-        const _fetch = window.fetch;
-        window.fetch = function (url, ...args) {
-            if (isAd(typeof url === 'string' ? url : url?.url))
-                return Promise.reject(new Error('blocked'));
-            return _fetch.call(this, url, ...args);
-        };
-
-        const _xhrOpen = XMLHttpRequest.prototype.open;
-        XMLHttpRequest.prototype.open = function (method, url, ...args) {
-            if (isAd(url)) return;
-            return _xhrOpen.call(this, method, url, ...args);
-        };
-
         const _open = window.open.bind(window);
         window.open = function (url, ...args) {
             if (!url) return null;
-            if (url.startsWith('/') || url.includes('optiklink.net')) return _open(url, ...args);
+            if (url.startsWith('/') || url.includes('optiklink')) return _open(url, ...args);
             return null;
         };
-
-        const _addEL = EventTarget.prototype.addEventListener;
-        EventTarget.prototype.addEventListener = function (type, fn, opts) {
-            if (type === 'click' && (this === window || this === document)) {
-                const src = fn?.toString() || '';
-                if (/setTimeout\s*\(\s*\w\s*,\s*0\s*\)/.test(src)) return;
-                if (/contextmenu.*localStorage|localStorage.*contextmenu/s.test(src)) return;
-            }
-            return _addEL.call(this, type, fn, opts);
-        };
-
-        Object.defineProperty(window, 'adsbygoogle', {
-            get: () => ({ loaded: true, push: () => {} }),
-            set: () => {},
-            configurable: false,
-        });
     });
 
     console.log('🚀 浏览器就绪！');
-    console.log('🛡️ OptikLink 广告猎手启动');
 
     try {
         console.log('🌐 验证出口 IP...');
         try {
-            const res = await page.goto('https://api.ipify.org?format=json', { waitUntil: 'domcontentloaded' });
+            const res = await page.goto('https://api.ipify.org?format=json', { waitUntil: 'domcontentloaded', timeout: 10000 });
             const body = await res.text();
-            const ip = JSON.parse(body).ip || body;
-            const masked = ip.replace(/(\d+\.\d+\.\d+\.)\d+/, '$1xx');
-            console.log(`✅ 出口 IP 确认：${masked}`);
+            console.log(`✅ 出口 IP 确认：${body}`);
         } catch {
             console.log('⚠️ IP 验证超时，跳过');
         }
@@ -253,7 +193,7 @@ test('OptikLink 保活', async ({ }, testInfo) => {
         await page.click("a[href='login']");
 
         console.log('⏳ 等待跳转 Discord 登录页...');
-        await page.waitForURL(url => !url.toString().includes('optiklink.com/auth'), { timeout: TIMEOUT });
+        await page.waitForURL(url => url.toString().includes('discord.com'), { timeout: TIMEOUT });
 
         const landedUrl = page.url();
 
@@ -264,159 +204,88 @@ test('OptikLink 保活', async ({ }, testInfo) => {
             console.log('📤 提交登录请求...');
             await page.click('button[type="submit"]');
             try {
-                await page.waitForURL(url => !url.toString().includes('discord.com/login'), { timeout: 15000 });
+                await page.waitForURL(url => !url.toString().includes('discord.com/login'), { timeout: 20000 });
             } catch {
                 let err = '账密错误或触发了 2FA / 验证码';
                 try { err = await page.locator('[class*="errorMessage"]').first().innerText(); } catch {}
-                await sendTG(`❌ Discord 登录失败：${err}`);
                 throw new Error(`❌ Discord 登录失败: ${err}`);
-            }
-        } else if (landedUrl.includes('discord.com/oauth2')) {
-            // 检查按钮：Log In 说明没有登录态，需先登录
-            try {
-                const btn = await page.waitForSelector('button.primary_a22cb0', { timeout: 5000 });
-                const btnText = (await btn.innerText()).trim();
-                if (/log\s*in/i.test(btnText) || btnText.includes('登录')) {
-                    console.log('✏️ 填写账号密码...');
-                    await btn.click();
-                    await page.waitForURL(/discord\.com\/login/, { timeout: 10000 });
-                    await page.fill('input[name="email"]', email);
-                    await page.fill('input[name="password"]', password);
-                    console.log('📤 提交登录请求...');
-                    await page.click('button[type="submit"]');
-                    try {
-                        await page.waitForURL(url => !url.toString().includes('discord.com/login'), { timeout: 15000 });
-                    } catch {
-                        let err = '账密错误或触发了 2FA / 验证码';
-                        try { err = await page.locator('[class*="errorMessage"]').first().innerText(); } catch {}
-                        await sendTG(`❌ Discord 登录失败：${err}`);
-                        throw new Error(`❌ Discord 登录失败: ${err}`);
-                    }
-                }
-            } catch (e) {
-                if (e.message.includes('Discord 登录失败')) throw e;
-                // 找不到按钮说明已自动处理
             }
         }
 
         // 处理可能出现的 OAuth 授权页
-        console.log('⏳ 等待 OAuth 授权...');
-        try {
-            await page.waitForURL(/discord\.com\/oauth2\/authorize/, { timeout: 6000 });
+        if (page.url().includes('discord.com/oauth2')) {
             console.log('🔍 进入 OAuth 授权页，处理中...');
-            console.log('  📄 当前在 Discord 授权页面');
             await handleOAuthPage(page);
-            console.log('  ✨ 已授权，等待自动跳转...');
-            try {
-                await page.waitForURL(/optiklink\.net/, { timeout: 15000 });
-                console.log('  ⏳ 跳转中，稍候...');
-            } catch { /* 继续 */ }
-            console.log(`✅ 已离开 Discord，当前：${page.url()}`);
-        } catch (e) {
-            if (e.message.includes('Discord 登录失败')) throw e;
         }
 
-        // ✅ 修复：OAuth 授权后若被重定向回 discord.com/login，再次填写账密登录
+        // ✅ 增加容错：如果又回到了登录页，二次登录
         if (page.url().includes('discord.com/login')) {
-            console.log('🔄 OAuth 后被重定向至登录页，再次填写账号密码...');
+            console.log('🔄 被重定向至登录页，进行二次登录...');
             await page.fill('input[name="email"]', email);
             await page.fill('input[name="password"]', password);
-            console.log('📤 提交登录请求...');
             await page.click('button[type="submit"]');
-            try {
-                await page.waitForURL(url => !url.toString().includes('discord.com/login'), { timeout: 20000 });
-                console.log(`✅ 二次登录后跳转至：${page.url()}`);
-            } catch {
-                let err = '账密错误或触发了 2FA / 验证码';
-                try { err = await page.locator('[class*="errorMessage"]').first().innerText(); } catch {}
-                await sendTG(`❌ Discord 二次登录失败：${err}`);
-                throw new Error(`❌ Discord 二次登录失败: ${err}`);
-            }
-
-            // 二次登录后可能再次出现 OAuth 授权页
+            await page.waitForURL(url => !url.toString().includes('discord.com/login'), { timeout: 20000 });
             if (page.url().includes('discord.com/oauth2')) {
-                console.log('🔍 二次进入 OAuth 授权页，处理中...');
                 await handleOAuthPage(page);
-                try {
-                    await page.waitForURL(/optiklink\.net/, { timeout: 15000 });
-                } catch { /* 继续 */ }
-                console.log(`✅ OAuth 二次处理完成，当前：${page.url()}`);
             }
         }
 
-        console.log('⏳ 确认到达 OptikLink...');
+        console.log('⏳ 确认回调并到达 OptikLink Dashboard...');
+        // 兼容 .net 和 .com 两种情况
         try {
-            await page.waitForURL(/optiklink\.net/, { timeout: 30000 });
-        } catch { /* 可能已经在页面 */ }
+            await page.waitForURL(url => url.toString().includes('optiklink'), { timeout: 30000 });
+        } catch { /* 容错 */ }
 
-        if (!page.url().includes('optiklink.net')) {
-            throw new Error(`❌ 未到达 OptikLink，当前 URL: ${page.url()}`);
+        // 如果遭遇 chrome-error 页，尝试强制刷新重回主控
+        if (page.url().includes('chrome-error') || !page.url().includes('optiklink')) {
+            console.log('⚠️ 检测到可能加载失败或处于错误页，尝试强制直连控制台...');
+            await page.goto('https://optiklink.net/', { waitUntil: 'networkidle', timeout: 30000 }).catch(() => {});
         }
-        console.log(`✅ 登录成功！当前：${page.url()}`);
 
-        console.log('📤 点击 Login to Panel...');
-        await page.click('a[data-target="#logintopanel"]');
-        await page.waitForTimeout(2000);
+        console.log(`✅ 当前页面 URL: ${page.url()}`);
 
         console.log('📤 直接导航到控制台登录页...');
-        const panelPage = page;
-        panelPage.setDefaultTimeout(TIMEOUT);
-        activePage = panelPage;
-        await panelPage.goto('https://control.optiklink.net/auth/login', { waitUntil: 'domcontentloaded', timeout: TIMEOUT });
-        console.log(`✅ 已到达控制台登录页：${panelPage.url()}`);
+        await page.goto('https://control.optiklink.net/auth/login', { waitUntil: 'domcontentloaded', timeout: TIMEOUT });
+        console.log(`✅ 已到达控制台登录页：${page.url()}`);
 
         console.log('✏️ 填写控制台账号密码...');
-        await panelPage.fill('input[name="username"]', panelUser);
-        await panelPage.fill('input[name="password"]', panelPass);
-
-        console.log('⏳ 等待 reCAPTCHA 加载...');
-        await panelPage.waitForFunction(() => {
-            return typeof grecaptcha !== 'undefined' && grecaptcha.getResponse !== undefined;
-        }, { timeout: 15000 }).catch(() => console.log('  ℹ️ reCAPTCHA 未检测到，继续...'));
-        await panelPage.waitForTimeout(2000);
+        await page.fill('input[name="username"]', panelUser);
+        await page.fill('input[name="password"]', panelPass);
 
         console.log('📤 提交控制台登录...');
-        await panelPage.click('button[type="submit"]');
+        await page.click('button[type="submit"]');
 
         console.log('⏳ 确认到达控制台首页...');
-        await panelPage.waitForURL(url => !url.toString().includes('/auth/login'), { timeout: TIMEOUT });
-        console.log(`✅ 控制台登录成功！当前：${panelPage.url()}`);
+        await page.waitForURL(url => !url.toString().includes('/auth/login'), { timeout: TIMEOUT });
+        console.log(`✅ 控制台登录成功！当前：${page.url()}`);
 
-        await panelPage.waitForTimeout(2000);
+        await page.waitForTimeout(3000);
 
         console.log('🔍 查找服务器...');
-        await panelPage.waitForTimeout(2000);
-
-        const serverInfo = await panelPage.evaluate(() => {
+        const serverInfo = await page.evaluate(() => {
             const card = document.querySelector('a[href*="/server/"]');
             if (!card) return null;
             const href = card.getAttribute('href');
             const id = href.replace('/server/', '').trim();
-            const nameEl = card.querySelector('p.sc-1ibsw91-5');
-            const name = nameEl ? nameEl.innerText.trim() : '';
+            const nameEl = card.querySelector('p.sc-1ibsw91-5') || card.querySelector('p');
+            const name = nameEl ? nameEl.innerText.trim() : 'Unknown';
             return { id, name };
         });
 
         if (!serverInfo) throw new Error('❌ 未找到服务器卡片');
         console.log(`✅ 找到服务器：${serverInfo.name} (${serverInfo.id})`);
 
-        await panelPage.goto(`https://control.optiklink.net/server/${serverInfo.id}`, { waitUntil: 'domcontentloaded' });
-        console.log(`✅ 已到达服务器页面：${panelPage.url()}`);
-
-        const serverPage = panelPage;
-
+        await page.goto(`https://control.optiklink.net/server/${serverInfo.id}`, { waitUntil: 'domcontentloaded' });
+        
         console.log('🔍 检查服务器状态...');
-        await serverPage.waitForTimeout(3000);
+        await page.waitForTimeout(5000);
 
-        // 若服务器处于 CONNECTING 等中间态，等待稳定
-        // STARTING 视为正常状态，无需等待
         let statusText = '';
-        for (let i = 0; i < 12; i++) {
-            statusText = await serverPage.locator('p.sc-168cvuh-1').innerText().catch(() => '');
+        for (let i = 0; i < 6; i++) {
+            statusText = await page.locator('p.sc-168cvuh-1').innerText().catch(() => '');
             const s = statusText.toLowerCase();
             if (s.includes('running') || s.includes('starting') || s.includes('offline') || s.includes('stopped')) break;
-            console.log(`  🔄 等待状态稳定（${statusText.trim()}）...`);
-            await serverPage.waitForTimeout(5000);
+            await page.waitForTimeout(4000);
         }
 
         console.log(`💻 服务器状态：${statusText.trim()}`);
@@ -426,14 +295,13 @@ test('OptikLink 保活', async ({ }, testInfo) => {
             await sendTG(`✅ 保活成功！\n💻 服务器状态：🚀 ${statusText.trim()}`, serverInfo.name);
         } else if (statusText.toLowerCase().includes('offline') || statusText.toLowerCase().includes('stopped')) {
             console.log('⚠️ 服务器离线，尝试启动...');
-            await serverPage.click('button:has-text("Start")');
+            await page.click('button:has-text("Start")').catch(() => page.click('button'));
             console.log('📤 已点击 Start，持续监控状态...');
 
             let started = false;
-            for (let i = 0; i < 24; i++) {
-                await serverPage.waitForTimeout(5000);
-                const s = await serverPage.locator('p.sc-168cvuh-1').innerText().catch(() => '');
-                console.log(`  🔄 第 ${i + 1} 次检查，状态：${s.trim()}`);
+            for (let i = 0; i < 15; i++) {
+                await page.waitForTimeout(5000);
+                const s = await page.locator('p.sc-168cvuh-1').innerText().catch(() => '');
                 if (s.toLowerCase().includes('running') || s.toLowerCase().includes('starting')) {
                     started = true;
                     break;
@@ -442,10 +310,10 @@ test('OptikLink 保活', async ({ }, testInfo) => {
 
             if (started) {
                 console.log('✅ 服务器已成功启动！');
-                await sendTG('🔄 Start 启动！\n💻 服务器状态：🚀 Running / Starting', serverInfo.name);
+                await sendTG('🔄 Start 启动！\n💻 服务器状态：🚀 Running', serverInfo.name);
             } else {
                 console.log('❌ 等待超时，服务器未能启动');
-                await sendTG('❌ Start 启动失败，等待超时\n💻 服务器状态：💤 Offline', serverInfo.name);
+                await sendTG('❌ Start 启动失败\n💻 服务器状态：💤 Offline', serverInfo.name);
             }
         } else {
             console.log(`⚠️ 未知状态：${statusText.trim()}`);
@@ -458,10 +326,9 @@ test('OptikLink 保活', async ({ }, testInfo) => {
             await activePage.screenshot({ path: screenshotPath, fullPage: true });
             await testInfo.attach('failure', { path: screenshotPath, contentType: 'image/png' });
             console.log('📸 失败截图已保存');
-        } catch { /* 截图失败不影响主流程 */ }
+        } catch {}
         await sendTG(`❌ 脚本异常：${e.message}`);
         throw e;
-
     } finally {
         await browser.close();
     }
