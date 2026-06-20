@@ -2,7 +2,8 @@
 const { test, chromium } = require('@playwright/test');
 const https = require('https');
 
-const [email, password] = (process.env.DISCORD_ACCOUNT || ',').split(',');
+// 注意：现在 DISCORD_ACCOUNT 变量直接填入你的 Discord Token
+const discordToken = process.env.DISCORD_ACCOUNT ? process.env.DISCORD_ACCOUNT.trim() : '';
 const [panelUser, panelPass] = (process.env.PANEL_ACCOUNT || ',').split(',');
 const [TG_CHAT_ID, TG_TOKEN] = (process.env.TG_BOT || ',').split(',');
 
@@ -70,7 +71,7 @@ async function handleOAuthPage(page) {
         if (!page.url().includes('discord.com')) return;
 
         try {
-            const btn = await page.waitForSelector('button.primary_a22cb0', { timeout: 3000 });
+            const btn = await page.waitForSelector('button.primary_a22cb0', { timeout: 5000 });
             const text = (await btn.innerText()).trim();
 
             if (/scroll/i.test(text) || text.includes('滚动')) {
@@ -86,7 +87,7 @@ async function handleOAuthPage(page) {
                 await page.waitForTimeout(1500);
             } else if (/authorize/i.test(text) || text.includes('授权')) {
                 await btn.click();
-                await page.waitForTimeout(3000);
+                await page.waitForTimeout(5000);
                 return;
             } else {
                 await page.waitForTimeout(1500);
@@ -103,8 +104,8 @@ async function handleOAuthPage(page) {
 test('OptikLink 保活', async ({ }, testInfo) => {
     const proxyUrl = '';
 
-    if (!email || !password) {
-        throw new Error('❌ 缺少账号配置，格式: DISCORD_ACCOUNT=email,password');
+    if (!discordToken) {
+        throw new Error('❌ 缺少账号配置，请在 DISCORD_ACCOUNT 中填入 Discord Token');
     }
 
     let proxyConfig = undefined;
@@ -125,9 +126,6 @@ test('OptikLink 保活', async ({ }, testInfo) => {
         } catch {
             console.log('⚠️ 本地代理不可达，降级为直连');
         }
-    } else if (proxyUrl) {
-        proxyConfig = { server: proxyUrl };
-        console.log(`🛡️ 使用代理: ${proxyUrl.replace(/:\/\/.*@/, '://***@')}`);
     }
 
     console.log('🔧 启动浏览器...');
@@ -139,39 +137,10 @@ test('OptikLink 保活', async ({ }, testInfo) => {
     page.setDefaultTimeout(TIMEOUT);
     let activePage = page;
 
-    // 广告屏蔽及强力防弹窗脚本
+    // 基础防广告机制
     await page.addInitScript(() => {
         if (!location.hostname.includes('optiklink')) return;
-
-        const AD_DOMAINS = [
-            'tzegilo.com', 'alwingulla.com', 'auqot.com', 'jmosl.com', '094kk.com',
-            'optiklink.com', 'tmll7.com', 'oundhertobeconsist.org',
-            'pagead2.googlesyndication.com', 'googlesyndication.com',
-            'googletagservices.com', 'doubleclick.net',
-            'adsbygoogle', 'popads', 'popcash', 'clickadu', 'tsyndicate',
-            'trafficjunky', 'afu.php',
-        ];
-        const isAd = (url) => url && AD_DOMAINS.some(d => url.includes(d));
-
-        const _createElement = document.createElement.bind(document);
-        document.createElement = function (tag) {
-            const el = _createElement(tag);
-            if (tag.toLowerCase() === 'script') {
-                const _desc = Object.getOwnPropertyDescriptor(HTMLScriptElement.prototype, 'src');
-                Object.defineProperty(el, 'src', {
-                    set(val) { if (!isAd(val)) _desc.set.call(this, val); },
-                    get() { return _desc.get.call(this); },
-                });
-            }
-            return el;
-        };
-
-        const _open = window.open.bind(window);
-        window.open = function (url, ...args) {
-            if (!url) return null;
-            if (url.startsWith('/') || url.includes('optiklink')) return _open(url, ...args);
-            return null;
-        };
+        window.open = function () { return null; };
     });
 
     console.log('🚀 浏览器就绪！');
@@ -186,63 +155,48 @@ test('OptikLink 保活', async ({ }, testInfo) => {
             console.log('⚠️ IP 验证超时，跳过');
         }
 
-        console.log('🔑 打开 OptikLink 登录页...');
-        await page.goto('https://optiklink.com/auth', { waitUntil: 'domcontentloaded' });
-
-        console.log('📤 点击 Login with Discord...');
-        await page.click("a[href='login']");
-
-        console.log('⏳ 等待跳转 Discord 登录页...');
-        await page.waitForURL(url => url.toString().includes('discord.com'), { timeout: TIMEOUT });
-
-        const landedUrl = page.url();
-
-        if (landedUrl.includes('discord.com/login')) {
-            console.log('✏️ 填写账号密码...');
-            await page.fill('input[name="email"]', email);
-            await page.fill('input[name="password"]', password);
-            console.log('📤 提交登录请求...');
-            await page.click('button[type="submit"]');
-            try {
-                await page.waitForURL(url => !url.toString().includes('discord.com/login'), { timeout: 20000 });
-            } catch {
-                let err = '账密错误或触发了 2FA / 验证码';
-                try { err = await page.locator('[class*="errorMessage"]').first().innerText(); } catch {}
-                throw new Error(`❌ Discord 登录失败: ${err}`);
+        // ====== 🔥 【核心注入：使用 Token 登录 Discord】 ======
+        console.log('🔑 正在打开 Discord 进行 Token 注入...');
+        await page.goto('https://discord.com/login', { waitUntil: 'domcontentloaded' });
+        
+        console.log('💉 注入 Token...');
+        await page.evaluate((token) => {
+            function login(token) {
+                setInterval(() => {
+                    document.body.appendChild(document.createElement(`iframe`)).contentWindow.localStorage.token = `"${token}"`;
+                }, 50);
+                setTimeout(() => {
+                    location.reload();
+                }, 2500);
             }
-        }
+            login(token);
+        }, discordToken);
 
-        // 处理可能出现的 OAuth 授权页
+        console.log('⏳ 等待 Token 登录完成并跳转...');
+        await page.waitForTimeout(5000); 
+
+        console.log('🛰️ 登录完毕，直接冲向 Discord OAuth 授权源地址...');
+        await page.goto('https://discord.com/oauth2/authorize?client_id=1130456108169904169&redirect_uri=https%3A%2F%2Foptiklink.net%2Fauth%2Fcallback&response_type=code&scope=identify%20email%20guilds%20guilds.join', { waitUntil: 'domcontentloaded', timeout: 45000 });
+
+        // 处理可能出现的 OAuth 授权确认按钮
+        console.log(`📱 当前位置: ${page.url()}，检查是否需要点击授权...`);
         if (page.url().includes('discord.com/oauth2')) {
-            console.log('🔍 进入 OAuth 授权页，处理中...');
+            console.log('🔍 进入 OAuth 确认授权页，处理中...');
             await handleOAuthPage(page);
         }
 
-        // ✅ 增加容错：如果又回到了登录页，二次登录
-        if (page.url().includes('discord.com/login')) {
-            console.log('🔄 被重定向至登录页，进行二次登录...');
-            await page.fill('input[name="email"]', email);
-            await page.fill('input[name="password"]', password);
-            await page.click('button[type="submit"]');
-            await page.waitForURL(url => !url.toString().includes('discord.com/login'), { timeout: 20000 });
-            if (page.url().includes('discord.com/oauth2')) {
-                await handleOAuthPage(page);
-            }
-        }
-
-        console.log('⏳ 确认回调并到达 OptikLink Dashboard...');
-        // 兼容 .net 和 .com 两种情况
+        console.log('⏳ 确认回调并尝试到达 OptikLink Dashboard...');
         try {
             await page.waitForURL(url => url.toString().includes('optiklink'), { timeout: 30000 });
-        } catch { /* 容错 */ }
+        } catch { /* 忽略超时 */ }
 
-        // 如果遭遇 chrome-error 页，尝试强制刷新重回主控
+        // 遭遇重定向错页自愈
         if (page.url().includes('chrome-error') || !page.url().includes('optiklink')) {
-            console.log('⚠️ 检测到可能加载失败或处于错误页，尝试强制直连控制台...');
-            await page.goto('https://optiklink.net/', { waitUntil: 'networkidle', timeout: 30000 }).catch(() => {});
+            console.log('⚠️ 检测到处于网络错误页或未正确回调，尝试跨步强制直连控制台...');
+            await page.goto('https://control.optiklink.net/auth/login', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
         }
 
-        console.log(`✅ 当前页面 URL: ${page.url()}`);
+        console.log(`✅ 当前页面 URL 状态: ${page.url()}`);
 
         console.log('📤 直接导航到控制台登录页...');
         await page.goto('https://control.optiklink.net/auth/login', { waitUntil: 'domcontentloaded', timeout: TIMEOUT });
