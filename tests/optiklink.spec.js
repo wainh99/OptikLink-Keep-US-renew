@@ -2,7 +2,7 @@
 const { test, chromium } = require('@playwright/test');
 const https = require('https');
 
-// 注意：现在 DISCORD_ACCOUNT 变量直接填入你的 Discord Token
+// 注意：DISCORD_ACCOUNT 变量直接填入你的 Discord Token
 const discordToken = process.env.DISCORD_ACCOUNT ? process.env.DISCORD_ACCOUNT.trim() : '';
 const [panelUser, panelPass] = (process.env.PANEL_ACCOUNT || ',').split(',');
 const [TG_CHAT_ID, TG_TOKEN] = (process.env.TG_BOT || ',').split(',');
@@ -102,8 +102,6 @@ async function handleOAuthPage(page) {
 }
 
 test('OptikLink 保活', async ({ }, testInfo) => {
-    const proxyUrl = '';
-
     if (!discordToken) {
         throw new Error('❌ 缺少账号配置，请在 DISCORD_ACCOUNT 中填入 Discord Token');
     }
@@ -133,14 +131,16 @@ test('OptikLink 保活', async ({ }, testInfo) => {
         headless: true,
         proxy: proxyConfig,
     });
-    const page = await browser.newPage();
-    ignoreHTTPSErrors: true  // 强制忽略所有代理或证书无效错误
+    
+    // ✅ 强力注入：创建一个忽略证书错误的浏览器上下文，拦截解密型代理报错
+    const context = await browser.newContext({
+        ignoreHTTPSErrors: true
     });
     const page = await context.newPage();
     page.setDefaultTimeout(TIMEOUT);
     let activePage = page;
 
-    // 基础防广告机制
+    // 基础防广告与弹窗机制
     await page.addInitScript(() => {
         if (!location.hostname.includes('optiklink')) return;
         window.open = function () { return null; };
@@ -158,7 +158,6 @@ test('OptikLink 保活', async ({ }, testInfo) => {
             console.log('⚠️ IP 验证超时，跳过');
         }
 
-        // ====== 🔥 【核心注入：使用 Token 登录 Discord】 ======
         console.log('🔑 正在打开 Discord 进行 Token 注入...');
         await page.goto('https://discord.com/login', { waitUntil: 'domcontentloaded' });
         
