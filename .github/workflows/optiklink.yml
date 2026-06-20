@@ -1,10 +1,8 @@
 name: 🎮 OptikLink-Keep
-
 on:
   schedule:
     - cron: '0 1 */2 * *'
   workflow_dispatch:
-
 jobs:
   keepalive:
     name: 🔄 执行保活
@@ -25,8 +23,23 @@ jobs:
       - name: 🌐 安装 Playwright 浏览器
         run: npx playwright install chromium --with-deps
 
-      - name: 🛡️ 启动 GOST 代理转发
-        if: ${{ env.GOST_PROXY != '' }}
+      # 新增：一键安装 Xray-core
+      - name: 🛰️ 安装 Xray-Core
+        run: |
+          bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
+
+      # 代理启动分支：优先VLESS节点，无节点则走原有GOST_PROXY
+      - name: 🛡️ 启动 Xray + GOST（VLESS-XHTTP节点）
+        if: ${{ secrets.VLESS_WS_NODE != '' }}
+        env:
+          VLESS_WS_NODE: ${{ secrets.VLESS_WS_NODE }}
+        run: |
+          # 后台静默运行xray，脚本内部会自动读取VLESS_WS_NODE生成配置并拉起xray进程
+          echo "✅ 检测到VLESS-XHTTP节点，交由JS脚本内部管理Xray+GOST进程"
+          sleep 2
+
+      - name: 🛡️ 启动 GOST 代理转发（原有外部代理兼容）
+        if: ${{ secrets.VLESS_WS_NODE == '' && secrets.GOST_PROXY != '' }}
         env:
           GOST_PROXY: ${{ secrets.GOST_PROXY }}
         run: |
@@ -46,6 +59,8 @@ jobs:
           PANEL_ACCOUNT:   ${{ secrets.PANEL_ACCOUNT }}
           TG_BOT:          ${{ secrets.TG_BOT }}
           GOST_PROXY:      http://127.0.0.1:8080
+          # 注入VLESS节点环境变量给JS脚本读取
+          VLESS_WS_NODE:   ${{ secrets.VLESS_WS_NODE }}
         run: npx playwright test
 
       - name: 📸 上传失败截图
