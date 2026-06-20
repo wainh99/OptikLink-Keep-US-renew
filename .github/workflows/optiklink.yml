@@ -34,11 +34,18 @@ jobs:
             exit 0
           fi
 
-          echo "📥 安装 Xray-core..."
-          bash <(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh) > /dev/null 2>&1
+          echo "📥 下载 Xray 二进制文件..."
+          # 自动获取最新版本号并下载对应 Linux amd64 的压缩包
+          XRAY_VER=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
+          echo "📦 Xray 最新版本: $XRAY_VER"
+          wget -q "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VER}/Xray-linux-64.zip"
+          
+          echo "📦 解压 Xray..."
+          unzip -q Xray-linux-64.zip -d xray_bin
+          chmod +x ./xray_bin/xray
           
           echo "🛠️ 转换为本地 HTTP 代理配置..."
-          # 使用纯 100% 兼容的 Node.js 脚本解析你的 VLESS URL 属性
+          # 使用 Node.js 精准解析 VLESS URL 的各项核心参数（包括特殊的 xhttp 模式及路径）
           node -e "
           const url = new URL(process.env.VLESS_LINKS);
           const config = {
@@ -74,7 +81,7 @@ jobs:
           "
 
           echo "🚀 启动 Xray 服务..."
-          nohup xray run -c xray_config.json > xray.log 2>&1 &
+          nohup ./xray_bin/xray run -c xray_config.json > xray.log 2>&1 &
           sleep 3
 
           echo "✅ Xray 已启动，测试代理连通性..."
