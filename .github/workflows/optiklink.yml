@@ -25,17 +25,16 @@ jobs:
       - name: 🌐 安装 Playwright 浏览器
         run: npx playwright install chromium --with-deps
 
-      - name: 🛡️ 启动 Xray 代理转发 (VLESS)
+      - name: 🛡️ 启动 Xray 代理转发 (SOCKS5)
         env:
-          VLESS_LINKS: ${{ secrets.VLESS_LINKS }}
+          SOCKS_LINK: ${{ secrets.SOCKS_LINK }}
         run: |
-          if [ -z "$VLESS_LINKS" ]; then
-            echo "⚠️ 未配置 VLESS_LINKS，跳过代理启动，降级为直连"
+          if [ -z "$SOCKS_LINK" ]; then
+            echo "⚠️ 未配置 SOCKS_LINK，跳过代理启动，降级为直连"
             exit 0
           fi
 
           echo "📥 下载 Xray 二进制文件..."
-          # 自动获取最新版本号并下载对应 Linux amd64 的压缩包
           XRAY_VER=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
           echo "📦 Xray 最新版本: $XRAY_VER"
           wget -q "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VER}/Xray-linux-64.zip"
@@ -45,47 +44,59 @@ jobs:
           chmod +x ./xray_bin/xray
           
           echo "🛠️ 转换为本地 HTTP 代理配置..."
-          # 使用 Node.js 精准解析 VLESS URL 的各项核心参数（包括特殊的 xhttp 模式及路径）
           node -e "
-          const url = new URL(process.env.VLESS_LINKS);
-          const config = {
-            log: { logLevel: 'warning' },
-            inbounds: [{
-              port: 8080, listen: '127.0.0.1', protocol: 'http', settings: { auth: 'noauth', udp: true }
-            }],
-            outbounds: [{
-              protocol: 'vless',
-              settings: {
-                vnext: [{
-                  address: url.hostname,
-                  port: parseInt(url.port || '443'),
-                  users: [{ id: url.username, encryption: url.searchParams.get('encryption') || 'none' }]
-                }]
-              },
-              streamSettings: {
-                network: url.searchParams.get('type') || 'tcp',
-                security: url.searchParams.get('security') || 'none',
-                tlsSettings: {
-                  serverName: url.searchParams.get('sni') || url.hostname,
-                  allowInsecure: url.searchParams.get('allowInsecure') === '1' || url.searchParams.get('insecure') === '1'
-                },
-                xhttpSettings: {
-                  path: url.searchParams.get('path') || '/',
-                  host: url.searchParams.get('host') || url.hostname,
-                  mode: url.searchParams.get('mode') || 'packet-up'
-                }
+          try {
+            const rawLink = process.env.SOCKS_LINK;
+            // 解析 socks:// 链接
+            const url = new URL(rawLink);
+            
+            // 处理 Base64 加密的用户名密码 (YmI0MjQyNjA6MDY2YWIzNzhiNzdk -> bb424260:066ab378b77d)
+            let username = url.username;
+            let password = url.password;
+            
+            if (username && !password) {
+              const decoded = Buffer.from(username, 'base64').toString('utf-8');
+              if (decoded.includes(':')) {
+                [username, password] = decoded.split(':');
               }
-            }]
-          };
-          require('fs').writeFileSync('xray_config.json', JSON.stringify(config, null, 2));
+            }
+
+            const config = {
+              log: { logLevel: 'warning' },
+              inbounds: [{
+                port: 8080,
+                listen: '127.0.0.1',
+                protocol: 'http',
+                settings: { auth: 'noauth', udp: true }
+              }],
+              outbounds: [{
+                protocol: 'socks',
+                settings: {
+                  servers: [{
+                    address: url.hostname,
+                    port: parseInt(url.port || '1080'),
+                    users: username ? [{ user: username, pass: password }] : []
+                  }]
+                }
+              }]
+            };
+            
+            require('fs').writeFileSync('./xray_bin/xray_config.json', JSON.stringify(config, null, 2));
+            console.log('✅ 配置文件生成成功');
+          } catch (err) {
+            console.error('❌ 解析 SOCKS 链接失败:', err.message);
+            process.exit(1);
+          }
           "
 
-          echo "🚀 启动 Xray 服务..."
-          nohup ./xray_bin/xray run -c xray_config.json > xray.log 2>&1 &
-          sleep 3
+          echo "🚀 在专属目录中启动 Xray 服务..."
+          cd xray_bin
+          nohup ./xray run -c xray_config.json > xray.log 2>&1 &
+          cd ..
+          sleep 5
 
           echo "✅ Xray 已启动，测试代理连通性..."
-          curl -s -x http://127.0.0.1:8080 https://api.ipify.org | sed 's/\([0-9]*\.[0-9]*\.[0-9]*\.\)[0-9]*/\1**/g'
+          curl -s -x http://127.0.0.1:8080 https://api.ipify.org || echo "❌ 代理测试未通，请检查节点可用性"
 
       - name: 🚀 运行保活脚本
         env:
